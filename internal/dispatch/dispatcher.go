@@ -61,6 +61,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		d.partition(record)
 
 		select {
 		case sem <- struct{}{}:
