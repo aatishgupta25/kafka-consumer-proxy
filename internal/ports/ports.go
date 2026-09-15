@@ -8,7 +8,7 @@ import (
 
 type Consumer interface {
 	Fetch(context.Context) (model.Record, error)
-	Commit(context.Context, model.Record) error
+	CommitOffset(context.Context, string, int, int64) error
 }
 
 type Worker interface {
