@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ func TestLiveKafkaConsumerAndDLQ(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	createTopics(t, broker, topic, dlqTopic)
 
 	producer := &segmentio.Writer{Addr: segmentio.TCP(broker), Topic: topic}
 	defer producer.Close()
@@ -72,6 +75,33 @@ func TestLiveKafkaConsumerAndDLQ(t *testing.T) {
 	}
 	if headers["source-topic"] != topic || headers["failure"] != "poison" {
 		t.Fatalf("unexpected dlq headers: %v", headers)
+	}
+}
+
+func createTopics(t *testing.T, broker string, topics ...string) {
+	t.Helper()
+	conn, err := segmentio.Dial("tcp", broker)
+	if err != nil {
+		t.Fatalf("dial Kafka: %v", err)
+	}
+	defer conn.Close()
+
+	controller, err := conn.Controller()
+	if err != nil {
+		t.Fatalf("find Kafka controller: %v", err)
+	}
+	controllerConn, err := segmentio.Dial("tcp", net.JoinHostPort(controller.Host, strconv.Itoa(controller.Port)))
+	if err != nil {
+		t.Fatalf("dial Kafka controller: %v", err)
+	}
+	defer controllerConn.Close()
+
+	configs := make([]segmentio.TopicConfig, 0, len(topics))
+	for _, topic := range topics {
+		configs = append(configs, segmentio.TopicConfig{Topic: topic, NumPartitions: 1, ReplicationFactor: 1})
+	}
+	if err := controllerConn.CreateTopics(configs...); err != nil {
+		t.Fatalf("create Kafka topics: %v", err)
 	}
 }
 
