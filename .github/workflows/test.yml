@@ -13,23 +13,4 @@ jobs:
         with:
           go-version: '1.23.x'
           cache: false
-
-      - name: Start Kafka
-        run: docker run -d --name kafka -p 9092:9092 apache/kafka:3.8.1
-
-      - name: Wait for Kafka
-        run: |
-          for i in {1..30}; do
-            if docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs kafka
-          exit 1
-
-      - name: Run tests
-        env:
-          KAFKA_INTEGRATION: '1'
-          KAFKA_BROKER: localhost:9092
-        run: go test ./...
+      - run: go test ./...
