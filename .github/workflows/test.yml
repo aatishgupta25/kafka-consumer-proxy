@@ -13,5 +13,9 @@ jobs:
         with:
           go-version: '1.23.x'
           cache: false
-      - run: go mod tidy
+      - run: |
+          go mod tidy
+          echo GO_SUM_START
+          cat go.sum
+          echo GO_SUM_END
       - run: go test ./...
