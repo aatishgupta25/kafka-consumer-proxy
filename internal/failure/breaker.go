@@ -27,5 +27,30 @@ func (b *Breaker) Success() {
 
 func (b *Breaker) Failure() {
 	b.mu.Lock()
-	de b.mu.Unlock()
+	defer b.mu.Unlock()
+
+	b.consecutive++
+	if b.threshold > 0 && b.consecutive >= b.threshold {
+		b.openUntil = time.Now().Add(b.cooldown)
+		b.consecutive = 0
+	}
+}
+
+func (b *Breaker) Wait(ctx context.Context) error {
+	b.mu.Lock()
+	remaining := time.Until(b.openUntil)
+	b.mu.Unlock()
+
+	if remaining <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
