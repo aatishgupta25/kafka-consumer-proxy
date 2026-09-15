@@ -1,0 +1,33 @@
+name: kafka-integration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  kafka:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: false
+      - name: Start Kafka
+        run: docker run -d --name kafka -p 9092:9092 apache/kafka:3.8.1
+      - name: Wait for Kafka
+        run: |
+          for i in {1..30}; do
+            if docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs kafka
+          exit 1
+      - name: Run live Kafka test
+        env:
+          KAFKA_INTEGRATION: '1'
+          KAFKA_BROKER: localhost:9092
+        run: go test ./internal/kafka -run TestLiveKafkaConsumerAndDLQ -count=1
