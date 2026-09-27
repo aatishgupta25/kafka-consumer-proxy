@@ -56,6 +56,7 @@ func main() {
 	breaker := failure.NewBreaker(envInt("BREAKER_FAILURES", 5), time.Duration(envInt("BREAKER_COOLDOWN_MS", 1000))*time.Millisecond)
 	proxy := dispatch.NewDispatcher(consumer, pool, dlq, breaker, maxAttempts, maxInFlight)
 	proxy.SetWorkerTimeout(time.Duration(envInt("WORKER_TIMEOUT_MS", 5000)) * time.Millisecond)
+	proxy.SetDrainTimeout(time.Duration(envInt("SHUTDOWN_GRACE_MS", 10000)) * time.Millisecond)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
