@@ -41,6 +41,7 @@ MAX_IN_FLIGHT=64
 MAX_ATTEMPTS=3
 BREAKER_FAILURES=5
 BREAKER_COOLDOWN_MS=1000
+SHUTDOWN_GRACE_MS=10000
 ```
 
 Run it with:
@@ -55,4 +56,4 @@ Run the tests with:
 go test ./...
 ```
 
-The test suite covers contiguous-prefix offset advancement, worker fan-out, slow out-of-order completions, poison-pill DLQ handling, circuit-breaker cooldown, and an in-memory gRPC client/server round trip.
+On shutdown, the proxy stops fetching new records and gives in-flight worker RPCs up to `SHUTDOWN_GRACE_MS` to finish and advance their offsets before canceling them. This avoids turning routine deploys and Kubernetes `SIGTERM` events into unnecessary redeliveries.\n\nThe test suite covers contiguous-prefix offset advancement, worker fan-out, slow out-of-order completions, poison-pill DLQ handling, circuit-breaker cooldown, graceful draining, and an in-memory gRPC client/server round trip.
