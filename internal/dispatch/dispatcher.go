@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	committracker "github.com/aatishgupta25/kafka-consumer-proxy/internal/commit"
 	"github.com/aatishgupta25/kafka-consumer-proxy/internal/failure"
@@ -22,12 +23,13 @@ type partitionState struct {
 }
 
 type Dispatcher struct {
-	consumer    ports.Consumer
-	workers     *Pool
-	dlq         ports.DeadLetterWriter
-	breaker     *failure.Breaker
-	maxAttempts int
-	maxInFlight int
+	consumer      ports.Consumer
+	workers       *Pool
+	dlq           ports.DeadLetterWriter
+	breaker       *failure.Breaker
+	maxAttempts   int
+	maxInFlight   int
+	workerTimeout time.Duration
 
 	mu         sync.Mutex
 	partitions map[partitionKey]*partitionState
@@ -45,6 +47,10 @@ func NewDispatcher(consumer ports.Consumer, workers *Pool, dlq ports.DeadLetterW
 		maxAttempts: maxAttempts, maxInFlight: maxInFlight,
 		partitions: make(map[partitionKey]*partitionState),
 	}
+}
+
+func (d *Dispatcher) SetWorkerTimeout(timeout time.Duration) {
+	d.workerTimeout = timeout
 }
 
 func (d *Dispatcher) Run(ctx context.Context) error {
@@ -81,13 +87,20 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 func (d *Dispatcher) handle(ctx context.Context, record model.Record) error {
 	var lastErr error
 	for attempt := 0; attempt < d.maxAttempts; attempt++ {
-		if err := d.workers.Next().Process(ctx, record); err == nil {
+		attemptCtx := ctx
+		cancel := func() {}
+		if d.workerTimeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, d.workerTimeout)
+		}
+
+		err := d.workers.Next().Process(attemptCtx, record)
+		cancel()
+		if err == nil {
 			d.breaker.Success()
 			return d.ack(ctx, record)
-		} else {
-			lastErr = err
-			d.breaker.Failure()
 		}
+		lastErr = err
+		d.breaker.Failure()
 	}
 
 	if d.dlq == nil {

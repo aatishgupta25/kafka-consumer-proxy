@@ -39,9 +39,12 @@ DLQ_TOPIC=events-dlq
 WORKERS=localhost:7001,localhost:7002,localhost:7003
 MAX_IN_FLIGHT=64
 MAX_ATTEMPTS=3
+WORKER_TIMEOUT_MS=5000
 BREAKER_FAILURES=5
 BREAKER_COOLDOWN_MS=1000
 ```
+
+`WORKER_TIMEOUT_MS` bounds each individual worker attempt so an unresponsive worker cannot occupy an in-flight slot forever. A timed-out attempt is handled like any other worker failure and participates in retries, circuit breaking, and DLQ routing.
 
 Run it with:
 
@@ -55,4 +58,4 @@ Run the tests with:
 go test ./...
 ```
 
-The test suite covers contiguous-prefix offset advancement, worker fan-out, slow out-of-order completions, poison-pill DLQ handling, circuit-breaker cooldown, and an in-memory gRPC client/server round trip.
+The test suite covers contiguous-prefix offset advancement, worker fan-out, slow out-of-order completions, worker timeouts, poison-pill DLQ handling, circuit-breaker cooldown, and an in-memory gRPC client/server round trip.

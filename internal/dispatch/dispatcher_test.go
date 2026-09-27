@@ -40,6 +40,13 @@ type failingWorker struct{}
 
 func (failingWorker) Process(context.Context, model.Record) error { return errors.New("poison") }
 
+type blockingWorker struct{}
+
+func (blockingWorker) Process(ctx context.Context, _ model.Record) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 type fakeDLQ struct {
 	mu      sync.Mutex
 	offsets []int64
@@ -87,5 +94,24 @@ func TestPoisonRecordMovesToDLQAndAdvancesOffset(t *testing.T) {
 	}
 	if len(consumer.commits) != 1 || consumer.commits[0] != 6 {
 		t.Fatalf("commits = %v, want [6]", consumer.commits)
+	}
+}
+
+func TestWorkerTimeoutMovesRecordToDLQ(t *testing.T) {
+	consumer := &fakeConsumer{}
+	dlq := &fakeDLQ{}
+	pool, _ := NewPool([]ports.Worker{blockingWorker{}})
+	d := NewDispatcher(consumer, pool, dlq, failure.NewBreaker(10, time.Millisecond), 1, 1)
+	d.SetWorkerTimeout(5 * time.Millisecond)
+	record := model.Record{Topic: "events", Partition: 0, Offset: 7}
+
+	if err := d.handle(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	if len(dlq.offsets) != 1 || dlq.offsets[0] != 7 {
+		t.Fatalf("dlq offsets = %v, want [7]", dlq.offsets)
+	}
+	if len(consumer.commits) != 1 || consumer.commits[0] != 8 {
+		t.Fatalf("commits = %v, want [8]", consumer.commits)
 	}
 }
