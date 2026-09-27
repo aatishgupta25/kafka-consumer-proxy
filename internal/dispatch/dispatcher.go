@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	committracker "github.com/aatishgupta25/kafka-consumer-proxy/internal/commit"
 	"github.com/aatishgupta25/kafka-consumer-proxy/internal/failure"
 	"github.com/aatishgupta25/kafka-consumer-proxy/internal/model"
 	"github.com/aatishgupta25/kafka-consumer-proxy/internal/ports"
 )
+
+const defaultDrainTimeout = 10 * time.Second
 
 type partitionKey struct {
 	topic     string
@@ -28,6 +31,7 @@ type Dispatcher struct {
 	breaker     *failure.Breaker
 	maxAttempts int
 	maxInFlight int
+	drainTimeout time.Duration
 
 	mu         sync.Mutex
 	partitions map[partitionKey]*partitionState
@@ -43,38 +47,72 @@ func NewDispatcher(consumer ports.Consumer, workers *Pool, dlq ports.DeadLetterW
 	return &Dispatcher{
 		consumer: consumer, workers: workers, dlq: dlq, breaker: breaker,
 		maxAttempts: maxAttempts, maxInFlight: maxInFlight,
+		drainTimeout: defaultDrainTimeout,
 		partitions: make(map[partitionKey]*partitionState),
+	}
+}
+
+func (d *Dispatcher) SetDrainTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		d.drainTimeout = timeout
 	}
 }
 
 func (d *Dispatcher) Run(ctx context.Context) error {
 	sem := make(chan struct{}, d.maxInFlight)
 	var wg sync.WaitGroup
-	defer wg.Wait()
+
+	workCtx, cancelWorkers := context.WithCancel(context.Background())
+	defer cancelWorkers()
 
 	for {
 		if err := d.breaker.Wait(ctx); err != nil {
-			return err
+			return d.finish(ctx, &wg, cancelWorkers, err)
 		}
 
 		record, err := d.consumer.Fetch(ctx)
 		if err != nil {
-			return err
+			return d.finish(ctx, &wg, cancelWorkers, err)
 		}
 		d.partition(record)
 
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
-			return ctx.Err()
+			return d.finish(ctx, &wg, cancelWorkers, ctx.Err())
 		}
 
 		wg.Add(1)
 		go func(record model.Record) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			_ = d.handle(ctx, record)
+			_ = d.handle(workCtx, record)
 		}(record)
+	}
+}
+
+func (d *Dispatcher) finish(ctx context.Context, wg *sync.WaitGroup, cancelWorkers context.CancelFunc, runErr error) error {
+	if ctx.Err() == nil {
+		cancelWorkers()
+		wg.Wait()
+		return runErr
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(d.drainTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		return runErr
+	case <-timer.C:
+		cancelWorkers()
+		return runErr
 	}
 }
 
