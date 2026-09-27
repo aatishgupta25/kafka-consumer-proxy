@@ -89,3 +89,77 @@ func TestPoisonRecordMovesToDLQAndAdvancesOffset(t *testing.T) {
 		t.Fatalf("commits = %v, want [6]", consumer.commits)
 	}
 }
+
+
+type drainingConsumer struct {
+	record model.Record
+	once   sync.Once
+	mu     sync.Mutex
+	commits []int64
+}
+
+func (c *drainingConsumer) Fetch(ctx context.Context) (model.Record, error) {
+	first := false
+	c.once.Do(func() { first = true })
+	if first {
+		return c.record, nil
+	}
+	<-ctx.Done()
+	return model.Record{}, ctx.Err()
+}
+
+func (c *drainingConsumer) CommitOffset(_ context.Context, _ string, _ int, offset int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.commits = append(c.commits, offset)
+	return nil
+}
+
+type drainingWorker struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w drainingWorker) Process(ctx context.Context, _ model.Record) error {
+	close(w.started)
+	select {
+	case <-w.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestShutdownDrainsInflightWorkBeforeCancelingWorkers(t *testing.T) {
+	consumer := &drainingConsumer{
+		record: model.Record{Topic: "events", Partition: 0, Offset: 21},
+	}
+	worker := drainingWorker{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	pool, _ := NewPool([]ports.Worker{worker})
+	d := NewDispatcher(consumer, pool, nil, failure.NewBreaker(3, time.Millisecond), 1, 1)
+	d.SetDrainTimeout(250 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	<-worker.started
+	cancel()
+
+	// The worker should keep its processing context during the drain window.
+	time.Sleep(10 * time.Millisecond)
+	close(worker.release)
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+
+	consumer.mu.Lock()
+	defer consumer.mu.Unlock()
+	if len(consumer.commits) != 1 || consumer.commits[0] != 22 {
+		t.Fatalf("commits = %v, want [22]", consumer.commits)
+	}
+}
