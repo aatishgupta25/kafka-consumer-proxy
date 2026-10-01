@@ -188,3 +188,44 @@ func TestShutdownDrainsInflightWorkBeforeCancelingWorkers(t *testing.T) {
 		t.Fatalf("commits = %v, want [22]", consumer.commits)
 	}
 }
+
+
+type slowCancelWorker struct {
+	started chan struct{}
+	delay   time.Duration
+}
+
+func (w slowCancelWorker) Process(ctx context.Context, _ model.Record) error {
+	close(w.started)
+	<-ctx.Done()
+	time.Sleep(w.delay)
+	return ctx.Err()
+}
+
+func TestDrainTimeoutWaitsForCanceledWorkersToExit(t *testing.T) {
+	consumer := &drainingConsumer{
+		record: model.Record{Topic: "events", Partition: 0, Offset: 30},
+	}
+	worker := slowCancelWorker{
+		started: make(chan struct{}),
+		delay:   20 * time.Millisecond,
+	}
+	pool, _ := NewPool([]ports.Worker{worker})
+	d := NewDispatcher(consumer, pool, nil, failure.NewBreaker(3, time.Millisecond), 1, 1)
+	d.SetDrainTimeout(5 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	<-worker.started
+	start := time.Now()
+	cancel()
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed < worker.delay {
+		t.Fatalf("Run() returned after %v, before worker cleanup delay %v", elapsed, worker.delay)
+	}
+}
