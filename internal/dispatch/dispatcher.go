@@ -117,6 +117,7 @@ func (d *Dispatcher) finish(ctx context.Context, wg *sync.WaitGroup, cancelWorke
 		return runErr
 	case <-timer.C:
 		cancelWorkers()
+		wg.Wait()
 		return runErr
 	}
 }
